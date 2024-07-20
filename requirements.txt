@@ -1,8 +1,9 @@
-streamlit==1.27.2
-requests==2.31.0
-beautifulsoup4==4.12.2
-pandas==2.1.1
-numpy>=1.23.2
-torch==2.0.0
-scikit-learn==1.0.2
+streamlit==1.24.0  # Streamlit의 최신 안정 버전
+scikit-learn==1.3.0  # Scikit-learn의 최신 안정 버전
+numpy==1.25.0  # Numpy의 최신 안정 버전
+cython==3.0.0  # Cython의 최신 안정 버전
+
+# 추가적인 필요 패키지
+pandas==2.0.0
+matplotlib==3.7.0
 joblib==1.1.0
