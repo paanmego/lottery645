@@ -148,7 +148,7 @@ def load_or_create_data():
     return df
 
 # Streamlit 앱 시작
-st.title("복권 645 AI 번호 예측 프로그램")
+st.title("복권 645 AI 번호 예측 프로그램:maded by 조용중")
 
 # 데이터 로드
 st.write("로또 데이터를 로딩 중입니다. 잠시만 기다려주세요...")
