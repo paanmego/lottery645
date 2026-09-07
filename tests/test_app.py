@@ -19,6 +19,8 @@ def test_dashboard_renders_from_local_cache(monkeypatch) -> None:
 
     assert not app.exception
     assert any("Lotto Insight" in markdown.value for markdown in app.markdown)
+    assert any("Bryah Cho 제작" in markdown.value for markdown in app.markdown)
+    assert any("1등 당첨금" in markdown.value for markdown in app.markdown)
     assert len(app.tabs) == 3
     assert len(app.dataframe) == 1
     assert len(app.button) >= 2

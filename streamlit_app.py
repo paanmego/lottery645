@@ -57,6 +57,10 @@ def inject_styles() -> None:
         }
         .eyebrow { font-size: .78rem; letter-spacing: .13em; font-weight: 700; color: #a8ebcd; }
         .hero h1 { font-size: clamp(2rem, 5vw, 3.45rem); margin: .35rem 0 .55rem; letter-spacing: -.055em; }
+        .creator-credit {
+            display: inline-flex; align-items: center; gap: .35rem; margin: -.15rem 0 .85rem;
+            color: #bfead6; font-size: .72rem; font-weight: 600; letter-spacing: .04em;
+        }
         .hero p { max-width: 660px; margin: 0; color: #d9f3e7; line-height: 1.7; }
         .hero-badge {
             display: inline-block; margin-top: 1.25rem; padding: .45rem .75rem; border-radius: 999px;
@@ -69,7 +73,9 @@ def inject_styles() -> None:
             border: 1px solid var(--line); background: rgba(255,255,255,.9); border-radius: 22px;
             padding: 1.35rem 1.45rem; box-shadow: 0 8px 30px rgba(24, 63, 47, .055);
         }
-        .pick-card { margin: .65rem 0; display: flex; align-items: center; gap: 1rem; }
+        .result-card { overflow: hidden; }
+        .pick-card { margin: .65rem 0; display: flex; align-items: center; gap: 1rem; min-width: 0; }
+        .pick-card > div { min-width: 0; }
         .pick-label { width: 56px; font-size: .8rem; font-weight: 700; color: var(--green); }
         .ball-row { display: flex; flex-wrap: wrap; align-items: center; gap: clamp(.38rem, 1.4vw, .75rem); }
         .lotto-ball {
@@ -88,6 +94,20 @@ def inject_styles() -> None:
         .bonus-tag { position: absolute; top: -15px; width: 100%; text-align: center; color: var(--muted); font-size: .62rem; }
         .mini-note { color: var(--muted); font-size: .82rem; line-height: 1.6; }
         .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:#55d596; }
+        .metrics-grid {
+            display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem;
+            margin: 1rem 0 1.4rem;
+        }
+        .metric-card {
+            min-width: 0; padding: 1rem 1.05rem; border-radius: 18px; border: 1px solid var(--line);
+            background: rgba(255,255,255,.86); box-shadow: 0 5px 18px rgba(24,63,47,.04);
+        }
+        .metric-label { color: var(--muted); font-size: .78rem; margin-bottom: .32rem; }
+        .metric-value {
+            color: var(--ink); font-size: clamp(1rem, 1.8vw, 1.36rem); line-height: 1.35;
+            font-weight: 700; letter-spacing: -.045em; white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
         div[data-testid="stMetric"] {
             background: rgba(255,255,255,.84); border: 1px solid var(--line); padding: 1rem 1.1rem;
             border-radius: 18px; box-shadow: 0 5px 18px rgba(24,63,47,.04);
@@ -100,12 +120,24 @@ def inject_styles() -> None:
         .stButton > button:hover { background: var(--green-dark); color: white; border: 0; }
         div[data-baseweb="tab-list"] { gap: .45rem; border-bottom: 1px solid var(--line); }
         button[data-baseweb="tab"] { border-radius: 10px 10px 0 0; padding: .65rem 1rem; }
+        @media (max-width: 900px) {
+            .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .pick-card { flex-wrap: wrap; }
+            .pick-card .mini-note { width: 100%; }
+        }
         @media (max-width: 640px) {
             .block-container { padding: 1rem .9rem 3rem; }
             .hero { padding: 1.55rem 1.35rem; border-radius: 22px; }
             .hero:after { display:none; }
+            .hero h1 { margin-bottom: .4rem; }
+            .result-card { padding: 1.15rem .9rem; }
+            .lotto-ball { width: 38px; height: 38px; font-size: .84rem; }
+            .ball-row { gap: .34rem; }
             .pick-card { align-items: flex-start; flex-direction: column; gap: .65rem; }
             .pick-label { width:auto; }
+            .metrics-grid { grid-template-columns: 1fr; gap: .55rem; }
+            .metric-value { font-size: 1.18rem; }
+            div[data-baseweb="tab-list"] { overflow-x: auto; }
         }
         </style>
         """,
@@ -140,6 +172,15 @@ def currency(value: int) -> str:
     return f"{int(value):,}원"
 
 
+def metric_card_html(label: str, value: str) -> str:
+    return (
+        '<div class="metric-card">'
+        f'<div class="metric-label">{html.escape(label)}</div>'
+        f'<div class="metric-value">{html.escape(value)}</div>'
+        "</div>"
+    )
+
+
 def draw_patterns(numbers: list[int]) -> dict[str, str]:
     odd = sum(number % 2 for number in numbers)
     low = sum(number <= 22 for number in numbers)
@@ -157,6 +198,7 @@ st.markdown(
     <section class="hero">
       <div class="eyebrow">LOTTO DATA LAB</div>
       <h1>Lotto Insight 645</h1>
+      <div class="creator-credit">✦ Bryah Cho 제작</div>
       <p>공식 추첨 데이터를 한눈에 보고, 과거 흐름을 바탕으로 균형 잡힌 번호 조합을 가볍게 탐색하세요.</p>
       <span class="hero-badge"><span class="status-dot"></span>공식 데이터 · 로컬 안전 캐시</span>
     </section>
@@ -233,11 +275,16 @@ with result_tab:
     )
 
     first_prize = prize_info[0] if prize_info else {"prize_amount": 0, "winners": 0}
-    metrics = st.columns(4)
-    metrics[0].metric("1등 당첨금", currency(first_prize["prize_amount"]))
-    metrics[1].metric("1등 당첨자", f"{int(first_prize['winners']):,}명")
-    for column, (label, value) in zip(metrics[2:], draw_patterns(selected_numbers).items()):
-        column.metric(label, value)
+    patterns = draw_patterns(selected_numbers)
+    st.markdown(
+        '<div class="metrics-grid">'
+        + metric_card_html("1등 당첨금", currency(first_prize["prize_amount"]))
+        + metric_card_html("1등 당첨자", f"{int(first_prize['winners']):,}명")
+        + metric_card_html("번호 합계", patterns["번호 합계"])
+        + metric_card_html("홀짝 균형", patterns["홀짝 균형"])
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
     st.markdown("#### 등위별 당첨 정보")
     prize_table = pd.DataFrame(prize_info).rename(
