@@ -1,130 +1,144 @@
-import numpy as np
-import pandas as pd
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import MinMaxScaler
-import joblib
-import os
+"""Fast, transparent recommendation engine for Lotto 6/45.
+
+Lottery draws are independent random events. This module deliberately returns
+balanced, data-inspired combinations without presenting them as better odds.
+"""
+
+from __future__ import annotations
+
 import ast
+import hashlib
+from pathlib import Path
+from typing import Iterable
 
-MODEL_PATH = 'lotto_rnn_model.pth'
-SCALER_PATH = 'lotto_scaler.save'
+import numpy as np
 
-class LottoDataset(Dataset):
-    def __init__(self, data, n_steps):
-        self.data = data
-        self.n_steps = n_steps
 
-    def __len__(self):
-        return max(len(self.data) - self.n_steps, 0)  # 음수가 되지 않도록 수정
+def _as_draw_matrix(data: Iterable[Iterable[int]]) -> np.ndarray:
+    matrix = np.asarray(list(data), dtype=int)
+    if matrix.ndim != 2 or matrix.shape[1] != 6 or len(matrix) < 2:
+        raise ValueError("추천에는 최소 2개 회차의 6개 당첨번호가 필요합니다.")
+    for row in matrix:
+        if len(set(row.tolist())) != 6 or np.any((row < 1) | (row > 45)):
+            raise ValueError("당첨번호는 중복 없는 1~45의 숫자 6개여야 합니다.")
+    return np.sort(matrix, axis=1)
 
-    def __getitem__(self, idx):
-        if idx + self.n_steps >= len(self.data):
-            x = self.data[idx:]
-            y = self.data[-1]  # 마지막 데이터를 타겟으로 사용
-        else:
-            x = self.data[idx:idx+self.n_steps]
-            y = self.data[idx+self.n_steps]
-        return torch.FloatTensor(x), torch.FloatTensor(y)
 
-class LottoRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(LottoRNN, self).__init__()
-        self.rnn = nn.LSTM(input_size, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
+def _minmax(values: np.ndarray) -> np.ndarray:
+    spread = float(values.max() - values.min())
+    if spread == 0:
+        return np.ones_like(values, dtype=float) * 0.5
+    return (values - values.min()) / spread
 
-    def forward(self, x):
-        out, _ = self.rnn(x)
-        out = self.fc(out[:, -1, :])
-        return out
 
-def train_model(data, n_steps=10, epochs=100, batch_size=32):
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(data)
+def calculate_number_scores(
+    data: Iterable[Iterable[int]], lookback: int = 80
+) -> np.ndarray:
+    """Blend long-run frequency, recency and overdue diversity into 45 weights."""
+    draws = _as_draw_matrix(data)
+    lookback = max(10, min(int(lookback), len(draws)))
+    recent = draws[-lookback:]
 
-    dataset = LottoDataset(scaled_data, n_steps)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    long_counts = np.bincount(draws.ravel(), minlength=46)[1:].astype(float)
+    recent_counts = np.zeros(45, dtype=float)
+    decay_weights = np.exp(np.linspace(-2.0, 0.0, len(recent)))
+    for draw, weight in zip(recent, decay_weights):
+        recent_counts[draw - 1] += weight
 
-    model = LottoRNN(input_size=6, hidden_size=50, output_size=6)
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    gaps = np.full(45, len(draws), dtype=float)
+    for reverse_index, draw in enumerate(draws[::-1]):
+        unseen = gaps == len(draws)
+        present = np.zeros(45, dtype=bool)
+        present[draw - 1] = True
+        gaps[unseen & present] = reverse_index
 
-    for epoch in range(epochs):
-        for batch_x, batch_y in dataloader:
-            optimizer.zero_grad()
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
-            optimizer.step()
+    blended = (
+        0.48 * _minmax(recent_counts)
+        + 0.32 * _minmax(long_counts)
+        + 0.20 * _minmax(gaps)
+    )
+    # A floor prevents visualized trends from excluding any valid number.
+    weights = 0.25 + blended
+    return weights / weights.sum()
 
-        if (epoch + 1) % 10 == 0:
-            print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}')
 
-    torch.save(model.state_dict(), MODEL_PATH)
-    joblib.dump(scaler, SCALER_PATH)
+def _default_seed(draws: np.ndarray) -> int:
+    digest = hashlib.sha256(draws[-20:].tobytes()).digest()
+    return int.from_bytes(digest[:8], "big", signed=False)
 
-def fine_tune_model(new_data):
-    model = LottoRNN(input_size=6, hidden_size=50, output_size=6)
-    model.load_state_dict(torch.load(MODEL_PATH))
-    scaler = joblib.load(SCALER_PATH)
-    
-    # 기존 데이터 로드
-    data = pd.read_csv('lotto_data.csv')
-    all_numbers = np.array([ast.literal_eval(num) for num in data['numbers']])
-    
-    # 새 데이터를 기존 데이터에 추가
-    all_numbers = np.vstack((all_numbers, new_data))
-    
-    scaled_data = scaler.transform(all_numbers)
-    
-    n_steps = min(10, len(scaled_data) - 1)  # n_steps를 데이터 길이에 맞게 조정
-    dataset = LottoDataset(scaled_data, n_steps)
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-    
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    
-    model.train()
-    for epoch in range(10):
-        for batch_x, batch_y in dataloader:
-            optimizer.zero_grad()
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
-            optimizer.step()
-    
-    torch.save(model.state_dict(), MODEL_PATH)
 
-def predict_next_numbers():
-    model = LottoRNN(input_size=6, hidden_size=50, output_size=6)
-    model.load_state_dict(torch.load(MODEL_PATH))
-    scaler = joblib.load(SCALER_PATH)
-    
-    data = pd.read_csv('lotto_data.csv')
-    # 'numbers' 열의 문자열을 실제 리스트로 변환
-    numbers = np.array([ast.literal_eval(num) for num in data['numbers']])
-    
-    scaled_data = scaler.transform(numbers)
-    last_10_draws = torch.FloatTensor(scaled_data[-10:]).unsqueeze(0)
-    
-    model.eval()
-    with torch.no_grad():
-        prediction = model(last_10_draws)
-    
-    prediction = scaler.inverse_transform(prediction.numpy())
-    return np.round(prediction[0]).astype(int)
+def _is_balanced(numbers: np.ndarray, sum_bounds: tuple[float, float]) -> bool:
+    odd_count = int(np.sum(numbers % 2 == 1))
+    low_count = int(np.sum(numbers <= 22))
+    total = int(numbers.sum())
+    consecutive_pairs = int(np.sum(np.diff(numbers) == 1))
+    return (
+        2 <= odd_count <= 4
+        and 2 <= low_count <= 4
+        and sum_bounds[0] <= total <= sum_bounds[1]
+        and consecutive_pairs <= 2
+    )
 
-def initialize_or_update_model(data):
-    if not os.path.exists(MODEL_PATH):
-        train_model(data)
-    else:
-        fine_tune_model(data[-1:])
 
-if __name__ == "__main__":
-    data = pd.read_csv('lotto_data.csv')
-    # 'numbers' 열의 문자열을 실제 리스트로 변환
-    numbers = np.array([ast.literal_eval(num) for num in data['numbers']])
-    
-    initialize_or_update_model(numbers)
-    print("Next predicted numbers:", predict_next_numbers())
+def generate_recommendations(
+    data: Iterable[Iterable[int]],
+    count: int = 5,
+    lookback: int = 80,
+    seed: int | None = None,
+) -> list[list[int]]:
+    """Generate valid, varied and reproducible weighted combinations."""
+    draws = _as_draw_matrix(data)
+    count = max(1, min(int(count), 10))
+    weights = calculate_number_scores(draws, lookback)
+    rng = np.random.default_rng(_default_seed(draws) if seed is None else seed)
+    draw_sums = draws.sum(axis=1)
+    sum_bounds = (float(np.quantile(draw_sums, 0.08)), float(np.quantile(draw_sums, 0.92)))
+
+    recommendations: list[list[int]] = []
+    attempts = 0
+    while len(recommendations) < count and attempts < count * 500:
+        attempts += 1
+        candidate = np.sort(rng.choice(np.arange(1, 46), size=6, replace=False, p=weights))
+        candidate_list = candidate.tolist()
+        if not _is_balanced(candidate, sum_bounds):
+            continue
+        if candidate_list in recommendations:
+            continue
+        if any(len(set(candidate_list) & set(existing)) > 4 for existing in recommendations):
+            continue
+        recommendations.append(candidate_list)
+
+    # Unusual tiny datasets may reject many samples. Always honor the count
+    # while retaining the hard number validity constraints.
+    while len(recommendations) < count:
+        candidate = sorted(rng.choice(np.arange(1, 46), size=6, replace=False).tolist())
+        if candidate not in recommendations:
+            recommendations.append(candidate)
+    return recommendations
+
+
+def describe_trends(
+    data: Iterable[Iterable[int]], lookback: int = 80
+) -> tuple[list[int], list[int]]:
+    scores = calculate_number_scores(data, lookback)
+    ranked = np.argsort(scores) + 1
+    return ranked[-6:][::-1].tolist(), ranked[:6].tolist()
+
+
+def predict_next_numbers(
+    data: Iterable[Iterable[int]] | None = None,
+    data_path: str | Path = "lotto_data.csv",
+) -> np.ndarray:
+    """Backward-compatible single-set API used by older callers."""
+    if data is None:
+        import csv
+
+        with Path(data_path).open(encoding="utf-8") as source:
+            rows = csv.DictReader(source)
+            data = [ast.literal_eval(row["numbers"]) for row in rows]
+    return np.asarray(generate_recommendations(data, count=1)[0], dtype=int)
+
+
+def initialize_or_update_model(data: Iterable[Iterable[int]]) -> None:
+    """Backward-compatible no-op: recommendations no longer retrain on clicks."""
+    _as_draw_matrix(data)
